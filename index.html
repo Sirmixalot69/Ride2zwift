@@ -113,7 +113,7 @@
   <header>
     <div class="logo" id="logo">🚴</div>
     <div>
-      <h1>ReRide <span class="ver">v1.7</span> <span class="ver" id="mode-badge">🚴 Bike</span></h1>
+      <h1>ReRide <span class="ver">v2.1</span> <span class="ver" id="mode-badge">🚴 Bike</span></h1>
       <p class="sub" id="sub">Reale Touren und Läufe visuell nachfahren – installierbare Web-App</p>
     </div>
   </header>
@@ -590,6 +590,26 @@ async function fetchMapillaryUrl(lat, lon, bearing) {
     return best ? best.thumb_1024_url : null;
   } catch (e) { return null; }
 }
+async function fetchKartaViewUrl(lat, lon, bearing) {
+  try {
+    const r = await fetch("https://api.openstreetcam.org/2.0/photo/?lat=" + lat.toFixed(6) + "&lng=" + lon.toFixed(6) +
+      "&zoomLevel=17&join=sequence");
+    if (!r.ok) return null;
+    const j = await r.json();
+    const data = (j && j.result && j.result.data) || (j && j.data) || [];
+    let best = null, bestScore = Infinity;
+    for (const im of data) {
+      if (!im || !im.fileurl || im.fileurl.indexOf("http") !== 0) continue;
+      if (im.projection === "SPHERE") continue;
+      const d = haversineKm({ lat, lon }, { lat: im.lat, lon: im.lng });
+      if (d > 0.15) continue;
+      const hd = im.heading == null ? 0 : Math.abs(((im.heading - bearing + 540) % 360) - 180);
+      const score = d * 1000 + hd * 3 + (hd > 90 ? 1000 : 0);
+      if (score < bestScore) { bestScore = score; best = im; }
+    }
+    return best ? { url: best.fileurl, credit: "© KartaView" } : null;
+  } catch (e) { return null; }
+}
 async function fetchPanoramaxUrl(lat, lon, bearing) {
   try {
     const dLat = 0.0012, dLon = 0.0016;
@@ -638,6 +658,10 @@ async function resolveStop(stopIdx) {
   if (!result && settings.mlyToken) {
     const u = await fetchMapillaryUrl(pi.lat, pi.lon, bearing);
     if (u) result = { url: u, credit: "© Mapillary" };
+  }
+  if (!result) {
+    const k = await fetchKartaViewUrl(pi.lat, pi.lon, bearing);
+    if (k) result = k;
   }
   if (!result) {
     const p = await fetchPanoramaxUrl(pi.lat, pi.lon, bearing);
@@ -849,6 +873,31 @@ function renderImport() {
       <p class="hint">🗺 <b>Komoot:</b> Tour öffnen → Menü → „GPX herunterladen"</p>
       <p class="hint" style="margin-top:10px">Die Datei landet in den Downloads bzw. im Dateien-Ordner – hier oben im Upload-Feld einfach auswählen, fertig.</p>
     </div>
+    ${mode !== "run" ? `<div class="card"><h2>🏆 Pro-Etappen 2026 nachfahren</h2>
+      <p class="hint">Lade die Etappe als GPX und importiere sie oben – dein Smart Bike fährt die <b>echten Steigungen
+        der Profi-Etappe</b> nach, in deinem Tempo. ReRide merkt sich deinen Fortschritt: Du kannst lange Bergetappen
+        in mehreren Sitzungen fahren und jederzeit weiterfahren.</p>
+      <p class="hint" style="margin-top:8px">🇫🇷 <b>Tour de France 2026</b> (4.–26. Juli · Start Barcelona · 21 Etappen · 3.245 km ·
+        2 Zielankünfte Alpe d'Huez): GPX gratis auf cyclingstage.com („Tour de France 2026: GPX") oder offiziell auf letour.fr</p>
+      <p class="hint">🇮🇹 <b>Giro d'Italia 2026</b> (Mai): offizielle Route auf giroditalia.it – GPX-Downloads ebenfalls auf cyclingstage.com</p>
+      <p class="hint">🇩🇪 <b>Deutschland Tour 2026</b>: Strecken und GPX auf deutschlandtour.de</p>
+      <p class="hint" style="margin-top:10px">💡 <b>Warum das komplett machbar ist:</b> Dein Trainer folgt dem Höhenprofil
+        der Etappe – nicht dem Tempo der Profis. Ein 8-%-Berg bleibt ein 8-%-Berg, egal ob du 30 oder 12 km/h fährst.
+        Und in den Alpen und Pyrenäen ist die Panorama-Abdeckung (Street View/KartaView) meist hervorragend.</p>
+    </div>` : ""}
+    ${mode === "run" ? `<div class="card"><h2>🏃 Marathon-Highlights nachlaufen</h2>
+      <p class="hint">Die großen Stadtmarathons als GPX importieren – von der offiziellen Streckenseite oder per
+        Komoot-Suche nach der offiziellen Route. ReRide Run spult dich dann durch die echte Strecke: z. B. New York
+        vom Start auf Staten Island über die Verrazzano-Brücke durch die Five Boroughs bis zum Central Park.
+        Der Fortschritt wird gespeichert – du kannst die 42,195 km in mehreren Läufen absolvieren.</p>
+      <p class="hint" style="margin-top:8px">🏆 <b>World Marathon Majors</b> (Saison 2026): Tokio (März) · Boston (April) ·
+        London (April) · Kapstadt (Mai) · Sydney (Ende August) · Berlin (Ende September) · Chicago (Oktober) ·
+        New York (Anfang November)</p>
+      <p class="hint">🇩🇪 <b>Deutsche Klassiker:</b> Hamburg (April), Frankfurt (Oktober), Köln (Herbst),
+        München (Oktober) – und Valencia (Dezember) als eine der schnellsten Strecken der Welt.</p>
+      <p class="hint" style="margin-top:10px">💡 Große Städte haben die beste Panorama-Abdeckung – praktisch die ganze
+        Strecke läuft mit echten Straßenbildern. Mit ⏺ nimmst du deinen Marathon-Lauf als Video auf.</p>
+    </div>` : ""}
     ${installCard}`;
   $("dz").addEventListener("click", () => $("file-input").click());
   $("btn-rec").addEventListener("click", () => (rec.on ? stopRec() : startRec()));
@@ -969,11 +1018,13 @@ function renderRelive() {
   const err = needRide("die Relive-Ansicht");
   if (err) { $("tab-relive").innerHTML = err; return; }
   const m = reliveMetrics();
+  let savedProg = 0;
+  try { savedProg = parseFloat(localStorage.getItem("r2z_prog_" + ride.name)) || 0; } catch (e) {}
   const tone = m.slope > 3 ? ["#f87171", "rgba(248,113,113,.1)"] : m.slope < -3 ? ["#7dd3fc", "rgba(125,211,252,.1)"] : ["#4ade80", "rgba(74,222,128,.1)"];
   const status = settings.svKey || settings.mlyToken || true ? "Panoramax läuft automatisch ohne Key mit." : "";
   $("tab-relive").innerHTML = `
     <p class="hint" style="margin-bottom:12px">Fahre deine Tour visuell nach – mit echten Panoramabildern, wo verfügbar:
-      Street View → Mapillary → Panoramax → Simulation. Die nächsten ~600 m werden laufend vorab geladen (Buffer),
+      Street View → Mapillary → KartaView → Panoramax → Simulation. Die nächsten ~600 m werden laufend vorab geladen (Buffer),
       damit die Fahrt flüssig wirkt. Das letzte Bild bleibt stehen, bis das nächste bereit ist – kein Flackern.
       📺 <b>Apple TV:</b> iPhone-Kontrollzentrum → „Bildschirmübertragung“ → Apple TV, dann Handy quer drehen –
       die Ansicht füllt dann den ganzen Fernseher aus. ${status}</p>
@@ -989,6 +1040,7 @@ function renderRelive() {
         <div class="h"><div class="l">Trittfreq.</div><div class="v" id="hud-c">–</div></div>
         <div class="h"><div class="l">Leistung</div><div class="v" id="hud-p">–</div></div>
       </div>
+      ${savedProg > 0.01 && relive.progress < 0.01 ? `<button class="btn-sec" id="btn-resume" style="width:100%;margin-top:10px;padding:10px">↩ Bei km ${(savedProg * ride.distanceKm).toFixed(1)} weiterfahren (${Math.round(savedProg * 100)} % der Etappe)</button>` : ""}
       <div class="controls">
         <button class="btn-play" id="btn-play">${relive.playing ? "⏸" : relive.progress >= 1 ? "↻" : "▶"}</button>
         <input type="range" id="seek" min="0" max="1" step="0.001" value="${relive.progress}">
@@ -996,8 +1048,14 @@ function renderRelive() {
         <button class="btn-sec" id="btn-reset">⟲</button>
         <button class="btn-sec" id="btn-fs" title="Vollbild / Apple TV">⛶</button>
       </div>
+      <div class="row-flex" style="margin-top:10px">
+        <button class="btn-sec" id="btn-vid" style="flex:1;padding:10px;${vid.on ? "background:#f87171;color:#020617" : ""}">${vid.on ? "⏹ Video stoppen & speichern" : "⏺ Video der Fahrt aufnehmen"}</button>
+        <button class="btn-sec" id="btn-look" style="flex:1;padding:10px">🍎 Look Around</button>
+      </div>
       <p class="hint" style="margin-top:10px">1x ≈ reale Fahrzeit (diese Tour: ~${Math.max(1, Math.round(ride.realSec / 60))} min bei 1x).
-        Bildwechsel alle ~50 m. Ist ein Smart Bike verbunden, ersetzt dein echtes Tempo den Zeitregler.</p>
+        Bildwechsel alle ~50 m. Ist ein Smart Bike verbunden, ersetzt dein echtes Tempo den Zeitregler.
+        ⏺ nimmt die Fahrt als echtes Video auf (MP4/WebM) mit Km-Stand und Steigung im Bild – am Streckenende stoppt
+        die Aufnahme automatisch und öffnet das Teilen-Menü. 🍎 öffnet die aktuelle Position in Apple Karten mit Look Around.</p>
     </div>
     <div class="card"><h2>Position auf der Strecke</h2><div id="rmap">${routeMapSvg(ride.points, relive.progress)}</div></div>
     <div class="card">
@@ -1057,7 +1115,7 @@ function renderRelive() {
     relive.speed = presets[(presets.indexOf(relive.speed) + 1) % presets.length];
     renderRelive();
   });
-  $("btn-reset").addEventListener("click", () => { relive.playing = false; relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; relive.lastGood = null; renderRelive(); });
+  $("btn-reset").addEventListener("click", () => { relive.playing = false; relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; relive.lastGood = null; try { localStorage.removeItem("r2z_prog_" + ride.name); } catch (e) {} renderRelive(); });
   $("in-sv").addEventListener("input", (e) => { settings.svKey = e.target.value.trim(); saveSettings(); });
   $("in-mly").addEventListener("input", (e) => { settings.mlyToken = e.target.value.trim(); saveSettings(); });
   const clrSv = $("clr-sv"); if (clrSv) clrSv.addEventListener("click", () => { settings.svKey = ""; saveSettings(); renderRelive(); });
@@ -1065,6 +1123,16 @@ function renderRelive() {
   $("btn-test").addEventListener("click", runConnTest);
   $("btn-ble").addEventListener("click", connectBike);
   $("btn-fs").addEventListener("click", toggleFs);
+  $("btn-vid").addEventListener("click", () => (vid.on ? stopVidRec() : startVidRec()));
+  $("btn-look").addEventListener("click", openLookAround);
+  const resBtn = $("btn-resume");
+  if (resBtn) resBtn.addEventListener("click", () => {
+    relive.progress = savedProg;
+    relive.lastStop = -1;
+    relive.lastFrame = null;
+    updateReliveFrame(true);
+    renderRelive();
+  });
   $("btn-erg").addEventListener("click", () => {
     bike.erg = !bike.erg; saveErg();
     if (!bike.erg && bike.connected && bike.cpc) sendGrade(0);
@@ -1118,11 +1186,127 @@ setInterval(() => {
   } else {
     relive.progress = Math.min(1, relive.progress + (relive.speed * 0.05) / ride.realSec);
   }
-  if (relive.progress >= 1) relive.playing = false;
+  if (relive.progress >= 1) { relive.playing = false; try { localStorage.removeItem("r2z_prog_" + ride.name); } catch (e) {} }
+  relive.saveAcc = (relive.saveAcc || 0) + 0.05;
+  if (relive.saveAcc >= 5) { relive.saveAcc = 0; try { localStorage.setItem("r2z_prog_" + ride.name, String(relive.progress)); } catch (e) {} }
   updateReliveFrame(true);
   const seek = $("seek"); if (seek) seek.value = relive.progress;
   const btn = $("btn-play"); if (btn && !relive.playing) btn.textContent = relive.progress >= 1 ? "↻" : "▶";
 }, 50);
+
+// ---------- Video-Export & Look Around ----------
+let vid = { on: false, rec: null, chunks: [], canvas: null, timer: null };
+let vidImgs = {};
+function vidSupported() {
+  return typeof MediaRecorder !== "undefined" && window.HTMLCanvasElement &&
+    typeof window.HTMLCanvasElement.prototype.captureStream === "function";
+}
+function getVidImg(url) {
+  return new Promise((res) => {
+    if (vidImgs[url] !== undefined) { res(vidImgs[url]); return; }
+    const i = new Image();
+    i.crossOrigin = "anonymous";
+    i.onload = () => { vidImgs[url] = i; res(i); };
+    i.onerror = () => { vidImgs[url] = null; res(null); };
+    i.src = url;
+  });
+}
+function drawCover(ctx, img, x, y, w, h) {
+  const s = Math.max(w / img.width, h / img.height);
+  const iw = img.width * s, ih = img.height * s;
+  ctx.drawImage(img, x + (w - iw) / 2, y + (h - ih) / 2, iw, ih);
+}
+function drawVidSim(ctx, w, h, m) {
+  const hor = h * 0.55 - m.slope * 2;
+  const g = ctx.createLinearGradient(0, 0, 0, Math.max(40, hor));
+  g.addColorStop(0, "#0c4a6e"); g.addColorStop(1, "#0284c7");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, Math.max(40, hor));
+  ctx.fillStyle = "#166534"; ctx.fillRect(0, Math.max(40, hor), w, h - Math.max(40, hor));
+  ctx.fillStyle = "#fde68a"; ctx.beginPath(); ctx.arc(w * 0.8, Math.max(40, hor) * 0.35, 24, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#1e293b";
+  ctx.beginPath(); ctx.moveTo(w * 0.35, h); ctx.lineTo(w * 0.47, Math.max(40, hor));
+  ctx.lineTo(w * 0.53, Math.max(40, hor)); ctx.lineTo(w * 0.65, h); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "rgba(251,191,36,.85)"; ctx.fillRect(w * 0.495, Math.max(40, hor), w * 0.01, h - Math.max(40, hor));
+  ctx.fillStyle = "#94a3b8"; ctx.font = "22px system-ui, sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("Simulation - hier gibt es keine Panoramabilder", w / 2, h - 90);
+}
+async function drawVidFrame() {
+  const c = vid.canvas, ctx = c.getContext("2d");
+  const m = reliveMetrics();
+  const stopIdx = stopForIdx(m.idx);
+  const cached = imgCache[stopIdx];
+  const frame = cached && cached !== "pending" ? cached : relive.lastGood;
+  const img = frame && frame.url ? await getVidImg(frame.url) : null;
+  ctx.fillStyle = "#0f172a"; ctx.fillRect(0, 0, c.width, c.height);
+  if (img) drawCover(ctx, img, 0, 0, c.width, c.height);
+  else drawVidSim(ctx, c.width, c.height, m);
+  ctx.fillStyle = "rgba(2,6,23,.75)"; ctx.fillRect(0, c.height - 56, c.width, 56);
+  ctx.fillStyle = "#e2e8f0"; ctx.font = "bold 22px system-ui, sans-serif"; ctx.textAlign = "left";
+  ctx.fillText("Km " + m.km.toFixed(1) + "   ·   " + Math.round(m.pt.ele) + " m   ·   " +
+    m.slope.toFixed(1) + " %   ·   " + (bike.connected ? bike.speedKmh.toFixed(1) + " km/h" : relive.speed + "x"),
+    24, c.height - 22);
+  ctx.textAlign = "right"; ctx.fillStyle = "#fb923c"; ctx.fillText("ReRide", c.width - 24, c.height - 22);
+}
+function vidTick() {
+  if (!vid.on || !vid.canvas) return;
+  drawVidFrame();
+  if (relive.progress >= 1 && vid.on) { stopVidRec(); return; }
+  vid.timer = setTimeout(vidTick, 90);
+}
+function startVidRec() {
+  if (!vidSupported()) {
+    alert("Videoaufnahme hier nicht unterstuetzt. Am PC/Android in Chrome/Edge nutzen - oder die Fahrt einfach im Vollbild mitmachen lassen.");
+    return;
+  }
+  if (!ride) return;
+  vid.on = true; vid.chunks = [];
+  vid.canvas = document.createElement("canvas");
+  vid.canvas.width = 1280; vid.canvas.height = 720;
+  try {
+    const stream = vid.canvas.captureStream(30);
+    let mime = "";
+    const cand = ["video/mp4", "video/webm;codecs=vp9", "video/webm"];
+    for (const t of cand) { if (MediaRecorder.isTypeSupported(t)) { mime = t; break; } }
+    vid.rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  } catch (e) { vid.on = false; alert("Rekorder-Fehler: " + ((e && e.message) || e)); return; }
+  vid.rec.ondataavailable = (e) => { if (e.data && e.data.size) vid.chunks.push(e.data); };
+  vid.rec.onstop = finishVid;
+  if (relive.progress >= 1) { relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; relive.lastGood = null; }
+  relive.playing = true;
+  vid.rec.start(250);
+  vidTick();
+  renderRelive();
+}
+function stopVidRec() {
+  vid.on = false;
+  if (vid.timer) { clearTimeout(vid.timer); vid.timer = null; }
+  if (vid.rec && vid.rec.state !== "inactive") vid.rec.stop();
+}
+function finishVid() {
+  const type = (vid.chunks.length && vid.chunks[0].type) || "video/webm";
+  const blob = new Blob(vid.chunks, { type });
+  const ext = type.indexOf("mp4") >= 0 ? "mp4" : "webm";
+  const fname = "reride-" + ((ride && ride.name) || "tour").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "_") + "." + ext;
+  const file = new File([blob], fname, { type });
+  vid.chunks = []; vid.rec = null; vid.canvas = null;
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: "ReRide" }).catch(() => {});
+  } else {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+  renderRelive();
+}
+function openLookAround() {
+  if (!ride) return;
+  const m = reliveMetrics();
+  const a = document.createElement("a");
+  a.href = "https://maps.apple.com/?ll=" + m.pt.lat.toFixed(6) + "," + m.pt.lon.toFixed(6) + "&z=17";
+  a.target = "_blank"; a.rel = "noopener";
+  document.body.appendChild(a); a.click(); a.remove();
+}
 
 // ---------- Verbindungstest ----------
 async function runConnTest() {
@@ -1161,9 +1345,24 @@ async function runConnTest() {
       res.panoStart = '<span class="dim">–</span>';
     }
   } catch (e) { res.panoApi = '<span class="bad">✗ Netzwerk blockiert</span>'; res.panoStart = '<span class="dim">–</span>'; }
+  try {
+    const r = await fetch("https://api.openstreetcam.org/2.0/photo/?lat=" + p0.lat.toFixed(6) + "&lng=" + p0.lon.toFixed(6) +
+      "&zoomLevel=17&join=sequence");
+    if (r.ok) {
+      const j = await r.json();
+      const arr = (j && j.result && j.result.data) || (j && j.data) || [];
+      const n = arr.filter((im) => im && im.fileurl && haversineKm({ lat: p0.lat, lon: p0.lon }, { lat: im.lat, lon: im.lng }) <= 0.15).length;
+      res.kvApi = '<span class="ok">✓ erreichbar (ohne Token)</span>';
+      res.kvStart = n > 0 ? `<span class="ok">✓ ${n} Fotos am Startpunkt</span>` : '<span class="dim">– keine Fotos am Startpunkt</span>';
+    } else {
+      res.kvApi = `<span class="bad">✗ HTTP-Fehler ${r.status}</span>`;
+      res.kvStart = '<span class="dim">–</span>';
+    }
+  } catch (e) { res.kvApi = '<span class="bad">✗ Netzwerk blockiert</span>'; res.kvStart = '<span class="dim">–</span>'; }
   out.innerHTML = `<b>Diagnose (Startpunkt deiner Fahrt)</b><br>
     Mapillary-API: ${res.mlyApi}<br>Mapillary-Fotos: ${res.mlyStart}<br>
-    Panoramax-API: ${res.panoApi}<br>Panoramax-Fotos: ${res.panoStart}`;
+    Panoramax-API: ${res.panoApi}<br>Panoramax-Fotos: ${res.panoStart}<br>
+    KartaView-API: ${res.kvApi}<br>KartaView-Fotos: ${res.kvStart}`;
 }
 
 // ---------- Setup-Tab ----------
@@ -1193,8 +1392,8 @@ function renderSetup() {
       <button class="btn-sec" id="btn-dl-gpx" style="width:100%;margin-top:8px;padding:11px">💾 GPX-Datei herunterladen</button>
       <p class="hint" style="margin-top:8px">Teilt Zusammenfassung + GPX über das Teilen-Menü (Nachrichten, Mail, WhatsApp…) – ideal für Garmin/Strava-Import auf der Gegenseite.</p>
     </div>
-    <div class="info-box"><b>Über ReRide</b> – v1.7: Eigene Radrunden und Läufe aufzeichnen oder importieren und als
-      Panorama-Fahrt nachfahren – mit Smart-Bike-Sync für Tempo und Widerstand. Wiedergabe-Tempo: 1x, 2x, 4x, 10x, 20x.
+    <div class="info-box"><b>Über ReRide</b> – v2.1: Eigene Touren und Läufe aufzeichnen, Profi-Etappen und Marathons
+      als Panorama-Fahrt nachfahren – mit Smart-Bike-Sync für Tempo und Widerstand. Wiedergabe-Tempo: 1x, 2x, 4x, 10x, 20x.
       Alle Daten bleiben auf deinem Gerät.</div>`;
   $("mode-bike").addEventListener("click", () => setMode("bike"));
   $("mode-run").addEventListener("click", () => setMode("run"));
