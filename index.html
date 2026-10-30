@@ -113,7 +113,7 @@
   <header>
     <div class="logo" id="logo">🚴</div>
     <div>
-      <h1>ReRide <span class="ver">v1.6</span> <span class="ver" id="mode-badge">🚴 Bike</span></h1>
+      <h1>ReRide <span class="ver">v1.7</span> <span class="ver" id="mode-badge">🚴 Bike</span></h1>
       <p class="sub" id="sub">Reale Touren und Läufe visuell nachfahren – installierbare Web-App</p>
     </div>
   </header>
@@ -122,7 +122,7 @@
     <button data-tab="import" class="active">📥 Import</button>
     <button data-tab="analyse">📈 Analyse</button>
     <button data-tab="match">🎯 Match</button>
-    <button data-tab="relive">🎥 Relive</button>
+    <button data-tab="relive">🎥 ReRide</button>
     <button data-tab="setup">⚙️ Setup</button>
   </nav>
 
@@ -136,6 +136,19 @@
 
 <script>
 "use strict";
+window.onerror = function (msg, src, line) {
+  try {
+    var d = document.getElementById("err-banner");
+    if (!d) {
+      d = document.createElement("div");
+      d.id = "err-banner";
+      d.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#7f1d1d;color:#fecaca;padding:10px;font:12px/1.4 monospace;white-space:pre-wrap";
+      document.body.appendChild(d);
+    }
+    d.textContent = "ReRide-Fehler: " + msg + " (Zeile " + line + ")";
+  } catch (e) {}
+  return false;
+};
 // ---------- Utils ----------
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -949,7 +962,7 @@ function toggleFs() {
     const ex = doc.exitFullscreen || doc.webkitExitFullscreen;
     if (ex) { try { const p = ex.call(doc); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
   } else {
-    alert("Vollbild wird von diesem Browser nicht unterstützt.\n\nFür Apple TV: Kontrollzentrum öffnen → „Bildschirmübertragung" → Apple TV, dann Handy quer drehen.");
+    alert("Vollbild wird von diesem Browser nicht unterstützt.\n\nFür Apple TV: Kontrollzentrum öffnen → „Bildschirmübertragung“ → Apple TV, dann Handy quer drehen.");
   }
 }
 function renderRelive() {
@@ -962,7 +975,7 @@ function renderRelive() {
     <p class="hint" style="margin-bottom:12px">Fahre deine Tour visuell nach – mit echten Panoramabildern, wo verfügbar:
       Street View → Mapillary → Panoramax → Simulation. Die nächsten ~600 m werden laufend vorab geladen (Buffer),
       damit die Fahrt flüssig wirkt. Das letzte Bild bleibt stehen, bis das nächste bereit ist – kein Flackern.
-      📺 <b>Apple TV:</b> iPhone-Kontrollzentrum → „Bildschirmübertragung" → Apple TV, dann Handy quer drehen –
+      📺 <b>Apple TV:</b> iPhone-Kontrollzentrum → „Bildschirmübertragung“ → Apple TV, dann Handy quer drehen –
       die Ansicht füllt dann den ganzen Fernseher aus. ${status}</p>
     <div class="card">
       <h2>Straßenansicht <span class="slope-badge" style="color:${tone[0]};background:${tone[1]};border-color:${tone[0]}55">
@@ -1093,7 +1106,7 @@ setInterval(() => {
   if (bike.connected && bike.cpc && bike.erg) {
     bike.gradeAcc += 0.05;
     const target = relive.playing ? reliveMetrics().slope : 0;
-    if (bike.gradeAcc >= 1 && Math.abs(target - (bike.lastGrade ?? 0)) > 0.4) {
+    if (bike.gradeAcc >= 1 && Math.abs(target - (bike.lastGrade || 0)) > 0.4) {
       bike.gradeAcc = 0;
       sendGrade(target);
     }
@@ -1180,7 +1193,7 @@ function renderSetup() {
       <button class="btn-sec" id="btn-dl-gpx" style="width:100%;margin-top:8px;padding:11px">💾 GPX-Datei herunterladen</button>
       <p class="hint" style="margin-top:8px">Teilt Zusammenfassung + GPX über das Teilen-Menü (Nachrichten, Mail, WhatsApp…) – ideal für Garmin/Strava-Import auf der Gegenseite.</p>
     </div>
-    <div class="info-box"><b>Über ReRide</b> – v1.6: Eigene Radrunden und Läufe aufzeichnen oder importieren und als
+    <div class="info-box"><b>Über ReRide</b> – v1.7: Eigene Radrunden und Läufe aufzeichnen oder importieren und als
       Panorama-Fahrt nachfahren – mit Smart-Bike-Sync für Tempo und Widerstand. Wiedergabe-Tempo: 1x, 2x, 4x, 10x, 20x.
       Alle Daten bleiben auf deinem Gerät.</div>`;
   $("mode-bike").addEventListener("click", () => setMode("bike"));
