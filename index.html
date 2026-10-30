@@ -3,17 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Ride2Zwift</title>
+<title>ReRide</title>
 <meta name="theme-color" content="#020617">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Ride2Zwift">
-<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22Ride2Zwift%22%2C%22short_name%22%3A%22Ride2Zwift%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23020617%22%2C%22theme_color%22%3A%22%23020617%22%2C%22start_url%22%3A%22.%22%7D">
+<meta name="apple-mobile-web-app-title" content="ReRide">
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22ReRide%22%2C%22short_name%22%3A%22ReRide%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23020617%22%2C%22theme_color%22%3A%22%23020617%22%2C%22start_url%22%3A%22.%22%7D">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, -apple-system, sans-serif; background: #020617; color: #e2e8f0; padding: 16px; }
   .wrap { max-width: 640px; margin: 0 auto; }
   header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  @media (max-width: 420px) { nav button { font-size: 11px; } }
+  #dim { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 999; }
   .logo { width: 48px; height: 48px; border-radius: 14px; background: linear-gradient(135deg, #f97316, #fbbf24);
     display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0; }
   h1 { font-size: 22px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -95,10 +97,10 @@
 <body>
 <div class="wrap">
   <header>
-    <div class="logo">🚴</div>
+    <div class="logo" id="logo">🚴</div>
     <div>
-      <h1>Ride2Zwift <span class="ver">v1.2 · PWA</span></h1>
-      <p class="sub">Reale Touren als Zwift-Route nachfahren – installierbare Web-App</p>
+      <h1>ReRide <span class="ver">v1.5</span> <span class="ver" id="mode-badge">🚴 Bike</span></h1>
+      <p class="sub" id="sub">Reale Touren und Läufe visuell nachfahren – installierbare Web-App</p>
     </div>
   </header>
 
@@ -107,13 +109,16 @@
     <button data-tab="analyse">📈 Analyse</button>
     <button data-tab="match">🎯 Match</button>
     <button data-tab="relive">🎥 Relive</button>
+    <button data-tab="setup">⚙️ Setup</button>
   </nav>
 
   <section id="tab-import"></section>
   <section id="tab-analyse" hidden></section>
   <section id="tab-match" hidden></section>
   <section id="tab-relive" hidden></section>
+  <section id="tab-setup" hidden></section>
 </div>
+<div id="dim"></div>
 
 <script>
 "use strict";
@@ -133,6 +138,16 @@ function bearingOf(a, b) {
   const y = Math.sin(rad(b.lon - a.lon)) * Math.cos(rad(b.lat));
   const x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) - Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(rad(b.lon - a.lon));
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+// ---------- Modus (Bike / Run) ----------
+var mode = "bike";
+try { mode = localStorage.getItem("r2z_mode") === "run" ? "run" : "bike"; } catch (e) {}
+function realSecFor(distKm) { return Math.max(60, (distKm / (mode === "run" ? 10 : 25)) * 3600); }
+function applyMode() {
+  const lg = $("logo"); if (lg) lg.textContent = mode === "run" ? "🏃" : "🚴";
+  const mb = $("mode-badge"); if (mb) mb.textContent = mode === "run" ? "🏃 Run" : "🚴 Bike";
+  try { localStorage.setItem("r2z_mode", mode); } catch (e) {}
 }
 
 // ---------- Parsing (GPX/TCX, tolerant per Regex) ----------
@@ -190,7 +205,7 @@ function buildRide(name, raw, source) {
     if (acc >= 0.05) { stops.push(i); acc = 0; }
   }
   if (stops[stops.length - 1] !== points.length - 1) stops.push(points.length - 1);
-  const realSec = Math.max(60, (dist / 25) * 3600);
+  const realSec = realSecFor(dist);
   return { name, distanceKm: dist, elevationM: Math.round(gain), points, profile, source, stops, realSec };
 }
 
@@ -333,6 +348,185 @@ function saveSettings() {
   } catch (e) {}
 }
 
+// ---------- Smart Bike / Trainer (Web Bluetooth) ----------
+let bike = { device: null, connected: false, name: "", svc: "", speedKmh: 0, cadence: 0, power: 0,
+  lastRevs: null, lastT: null, lastCrank: null, lastCt: null, mode: "",
+  cpc: null, lastGrade: null, erg: true, gradeAcc: 0 };
+let circ = 2.1;
+try { circ = parseFloat(localStorage.getItem("r2z_circ")) || 2.1; } catch (e) {}
+try { bike.erg = localStorage.getItem("r2z_erg") !== "0"; } catch (e) {}
+function saveErg() { try { localStorage.setItem("r2z_erg", bike.erg ? "1" : "0"); } catch (e) {} }
+function bleStatusHtml() {
+  if (bike.connected) return `<span class="ok">✓ Verbunden: ${bike.name} (${bike.svc})</span> – dein Tritt steuert Tempo &amp; Position.`;
+  if (!navigator.bluetooth) return '<span class="bad">✗ Web Bluetooth fehlt in diesem Browser. iPhone: App "Bluefy" nutzen (App Store, gratis) und die Tour dort öffnen. Desktop/Android: Chrome oder Edge.</span>';
+  return '<span class="dim">Nicht verbunden – Wiedergabe läuft über den Zeitregler.</span>';
+}
+function setBleStatus(html) { const el = $("ble-status"); if (el) el.innerHTML = html; }
+function saveCirc() { try { localStorage.setItem("r2z_circ", String(circ)); } catch (e) {} }
+async function connectBike() {
+  if (bike.connected) { await disconnectBike(); return; }
+  if (!navigator.bluetooth) { setBleStatus(bleStatusHtml()); return; }
+  setBleStatus("Suche Trainer – wähle dein Smart Bike im Dialog…");
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [
+        { services: ["fitness_machine"] },
+        { services: ["cycling_speed_and_cadence"] },
+        { services: ["cycling_power"] },
+        { services: ["running_speed_and_cadence"] },
+      ],
+    });
+    bike.device = device;
+    bike.name = device.name || "Trainer";
+    device.addEventListener("gattserverdisconnected", () => {
+      bike.connected = false; bike.speedKmh = 0; bike.cadence = 0; bike.power = 0;
+      bike.cpc = null; bike.lastGrade = null; bike.gradeAcc = 0;
+      setBleStatus('<span class="bad">✗ Verbindung zum Bike getrennt.</span>');
+      const eo = $("erg-out"); if (eo) eo.textContent = ergStatusHtml();
+      const b = $("btn-ble"); if (b) { b.textContent = "Mit Bluetooth verbinden"; b.classList.remove("bad"); }
+      const ht = $("hud-t"); if (ht) ht.textContent = relive.speed + "x";
+    });
+    const server = await device.gatt.connect();
+    let got = "";
+    if (mode === "run") {
+      try {
+        const svc = await server.getPrimaryService("running_speed_and_cadence");
+        const ch = await svc.getCharacteristic("rsc_measurement");
+        await ch.startNotifications();
+        ch.addEventListener("characteristicvaluechanged", handleRsc);
+        got = "RSC";
+      } catch (e) {}
+    }
+    if (!got) try {
+      const svc = await server.getPrimaryService("fitness_machine");
+      const ch = await svc.getCharacteristic("indoor_bike_data");
+      await ch.startNotifications();
+      ch.addEventListener("characteristicvaluechanged", handleIbd);
+      got = "FTMS";
+      try {
+        const cp = await svc.getCharacteristic("fitness_machine_control_point");
+        await cp.writeValue(new Uint8Array([0x00])); // Request Control
+        bike.cpc = cp;
+      } catch (e) { bike.cpc = null; }
+    } catch (e) {}
+    if (!got) {
+      try {
+        const svc = await server.getPrimaryService("cycling_speed_and_cadence");
+        const ch = await svc.getCharacteristic("csc_measurement");
+        await ch.startNotifications();
+        ch.addEventListener("characteristicvaluechanged", handleCsc);
+        got = "CSC";
+      } catch (e) {}
+    }
+    if (!got) {
+      try {
+        const svc = await server.getPrimaryService("cycling_power");
+        const ch = await svc.getCharacteristic("cycling_power_measurement");
+        await ch.startNotifications();
+        ch.addEventListener("characteristicvaluechanged", handleCpm);
+        got = "Nur Leistung – kein Tempo!";
+      } catch (e) {}
+    }
+    if (!got) {
+      setBleStatus('<span class="bad">✗ Verbunden, aber kein passender Sensor-Dienst (FTMS/CSC/Power) gefunden.</span>');
+      try { await device.gatt.disconnect(); } catch (e) {}
+      return;
+    }
+    bike.connected = true;
+    bike.svc = got === "Nur Leistung – kein Tempo!" ? "Power" : got;
+    bike.mode = got === "Nur Leistung – kein Tempo!" ? "power" : "speed";
+    if (bike.mode === "power") setBleStatus('<span class="amber">⚠ Nur Leistungsmessung gefunden – Tempo-Sync braucht FTMS oder CSC.</span>');
+    else setBleStatus(bleStatusHtml());
+    const b = $("btn-ble"); if (b) b.textContent = "Trennen";
+  } catch (e) {
+    setBleStatus('<span class="bad">✗ Abgebrochen: ' + String((e && e.message) || e) + '</span>');
+  }
+}
+async function disconnectBike() {
+  try { if (bike.cpc) await bike.cpc.writeValue(new Uint8Array([0x04, 0, 0, 0, 0, 0x28, 0x33])); } catch (e) {}
+  try { if (bike.device && bike.device.gatt && bike.device.gatt.connected) await bike.device.gatt.disconnect(); } catch (e) {}
+  bike.connected = false; bike.speedKmh = 0; bike.cadence = 0; bike.power = 0;
+  bike.lastRevs = null; bike.lastCrank = null;
+  bike.cpc = null; bike.lastGrade = null; bike.gradeAcc = 0;
+  setBleStatus(bleStatusHtml());
+  const eo = $("erg-out"); if (eo) eo.textContent = ergStatusHtml();
+  const b = $("btn-ble"); if (b) b.textContent = "Mit Bluetooth verbinden";
+  const ht = $("hud-t"); if (ht) ht.textContent = relive.speed + "x";
+}
+function handleIbd(ev) {
+  const dv = ev.target.value;
+  const flags = dv.getUint16(0, true);
+  let off = 2;
+  if (flags & 0x0001) { bike.speedKmh = dv.getUint16(off, true) * 0.01; off += 2; }
+  if (flags & 0x0002) { off += 2; }
+  if (flags & 0x0004) { bike.cadence = dv.getUint16(off, true) * 0.5; off += 2; }
+  if (flags & 0x0008) { off += 2; }
+  if (flags & 0x0010) { off += 3; }
+  if (flags & 0x0020) { off += 2; }
+  if (flags & 0x0040) { bike.power = dv.getInt16(off, true); off += 2; }
+}
+function handleCsc(ev) {
+  const dv = ev.target.value;
+  const flags = dv.getUint8(0);
+  let off = 1;
+  if (flags & 0x01) {
+    const revs = dv.getUint32(off, true); off += 4;
+    const t = dv.getUint16(off, true); off += 2;
+    if (bike.lastRevs !== null && revs >= bike.lastRevs) {
+      const dRevs = revs - bike.lastRevs;
+      const dt = (t - bike.lastT + 65536) % 65536;
+      if (dt > 0 && dRevs > 0) bike.speedKmh = (dRevs * circ * 3.6 * 1024) / dt;
+    }
+    bike.lastRevs = revs; bike.lastT = t;
+  }
+  if (flags & 0x02) {
+    const crank = dv.getUint16(off, true);
+    const ct = dv.getUint16(off + 2, true);
+    if (bike.lastCrank !== null && crank >= bike.lastCrank) {
+      const dc = crank - bike.lastCrank;
+      const dct = (ct - bike.lastCt + 65536) % 65536;
+      if (dc > 0 && dct > 0) bike.cadence = (dc * 60 * 1024) / (dct * 2);
+    }
+    bike.lastCrank = crank; bike.lastCt = ct;
+  }
+}
+function handleRsc(ev) {
+  const dv = ev.target.value;
+  bike.speedKmh = (dv.getUint16(1, true) / 256) * 3.6; // RSC: m/s mit 1/256-Auflösung
+  bike.cadence = dv.getUint16(3, true);                // Schritte/min
+}
+function handleCpm(ev) {
+  const dv = ev.target.value;
+  const flags = dv.getUint16(0, true);
+  let off = 2;
+  if (flags & 0x0001) off += 1;
+  if (flags & 0x0002) off += 2;
+  bike.power = dv.getInt16(off, true);
+}
+function ergStatusHtml() {
+  if (!bike.connected) return "Verbinde zuerst dein Bike.";
+  if (!bike.cpc) return "Trainer ohne FTMS-Steuerung – Widerstands-Sync nicht verfügbar.";
+  return bike.erg ? "Aktiv: Der Trainer folgt der Steigung deiner Tour." : "Aus – der Trainer bleibt in seinem eigenen Modus.";
+}
+async function sendGrade(pct) {
+  if (!bike.cpc) return;
+  const g = Math.max(-30, Math.min(30, pct));
+  const v = Math.round(g * 100);
+  const data = new Uint8Array(7);
+  data[0] = 0x04;                       // Set Indoor Bike Simulation Parameters
+  data[1] = 0; data[2] = 0;             // Windgeschwindigkeit 0 m/s
+  data[3] = v & 0xff; data[4] = (v >> 8) & 0xff; // Steigung in 0.01 %
+  data[5] = 0x28;                       // Rollwiderstand CRR 0.004
+  data[6] = 0x33;                       // Luftwiderstand CW 0.51 kg/m
+  try {
+    await bike.cpc.writeValue(data);
+    bike.lastGrade = g;
+    const eo = $("erg-out"); if (eo) eo.textContent = "Steigung gesendet: " + (g >= 0 ? "+" : "") + g.toFixed(1) + " %";
+  } catch (e) {
+    const eo = $("erg-out"); if (eo) eo.textContent = "Widerstand senden fehlgeschlagen.";
+  }
+}
+
 // ---------- Bild-Provider ----------
 function streetViewUrl(pt, bearing) {
   return "https://maps.googleapis.com/maps/api/streetview?size=640x360&location=" +
@@ -443,6 +637,115 @@ function setFp(stopIdx) {
   fp.innerHTML = loadingBox("Lade Panoramabild…");
 }
 
+// ---------- Live-Aufnahme (GPS) ----------
+let rec = { on: false, pts: [], t0: 0, watch: null };
+function recs() { try { return JSON.parse(localStorage.getItem("r2z_recs") || "[]"); } catch (e) { return []; } }
+function saveRecs(list) { try { localStorage.setItem("r2z_recs", JSON.stringify(list)); } catch (e) {} }
+function recStats() {
+  let dist = 0;
+  for (let i = 1; i < rec.pts.length; i++) dist += haversineKm(rec.pts[i - 1], rec.pts[i]);
+  const dur = rec.pts.length ? Math.round(((rec.pts[rec.pts.length - 1].t || Date.now()) - (rec.pts[0].t || rec.t0)) / 1000) : 0;
+  return { distKm: dist, dur, n: rec.pts.length };
+}
+function startRec() {
+  if (!navigator.geolocation) { alert("GPS wird von diesem Browser nicht unterstützt."); return; }
+  rec = { on: true, pts: [], t0: Date.now(), watch: null };
+  rec.watch = navigator.geolocation.watchPosition((pos) => {
+    const c = pos.coords;
+    const last = rec.pts[rec.pts.length - 1];
+    if (last && haversineKm(last, { lat: c.latitude, lon: c.longitude }) * 1000 < 4) return;
+    rec.pts.push({ lat: c.latitude, lon: c.longitude, ele: c.altitude || 0, t: Date.now() });
+    const s = recStats();
+    const el = $("rec-live");
+    if (el) el.textContent = `● Aufnahme läuft: ${fmt(s.distKm)} km · ${Math.floor(s.dur / 60)}:${String(s.dur % 60).padStart(2, "0")} min · ${s.n} Punkte`;
+  }, (err) => { alert("GPS-Fehler: " + (err && err.message ? err.message : "unbekannt")); stopRec(); },
+  { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 });
+  renderImport();
+}
+function stopRec() {
+  if (rec.watch !== null) { try { navigator.geolocation.clearWatch(rec.watch); } catch (e) {} }
+  rec.on = false; rec.watch = null;
+  if (rec.pts.length < 10) { alert("Zu kurz aufgezeichnet – mindestens 10 GPS-Punkte nötig."); renderImport(); return; }
+  const dur = Math.max(60, Math.round(((rec.pts[rec.pts.length - 1].t || Date.now()) - rec.pts[0].t) / 1000));
+  const name = (mode === "run" ? "Lauf " : "Fahrt ") + new Date().toLocaleDateString("de-DE");
+  const r = buildRide(name, rec.pts, "Live-Aufnahme");
+  if (!r) { alert("Aufnahme konnte nicht ausgewertet werden."); renderImport(); return; }
+  r.realSec = dur;
+  const list = recs();
+  list.unshift({ id: Date.now(), name: r.name, date: new Date().toISOString(), distanceKm: r.distanceKm,
+    elevationM: r.elevationM, realSec: dur, pts: rec.pts.filter((_, i) => i % 2 === 0) });
+  if (list.length > 10) list.length = 10;
+  saveRecs(list);
+  loadRide(r);
+}
+function recListHtml() {
+  const list = recs();
+  if (!list.length) return '<p class="hint" style="margin-top:10px">Noch keine Aufnahmen gespeichert – die letzten 10 werden automatisch hier abgelegt.</p>';
+  return `<div class="divider"><label class="lbl">Gespeicherte Aufnahmen</label>` + list.map((x) => `
+    <div class="row-flex" style="margin-top:8px">
+      <button class="demo-btn" data-rec="${x.id}" style="flex:1;margin-bottom:0">${x.name}
+        <span class="go">Laden →</span><span class="meta">${fmt(x.distanceKm)} km · ${x.elevationM} hm</span></button>
+      <button class="btn-sec" data-recdel="${x.id}">🗑</button>
+    </div>`).join("") + `</div>`;
+}
+function loadRec(id) {
+  const x = recs().find((y) => String(y.id) === String(id));
+  if (!x) return;
+  const r = buildRide(x.name, x.pts, "Live-Aufnahme");
+  if (r) { r.realSec = x.realSec || r.realSec; loadRide(r); }
+}
+function delRec(id) { saveRecs(recs().filter((y) => String(y.id) !== String(id))); renderImport(); }
+
+// ---------- Teilen ----------
+function gpxFromRide() {
+  const pts = ride.points.map((p) => `<trkpt lat="${p.lat}" lon="${p.lon}"><ele>${Math.round(p.ele)}</ele></trkpt>`).join("");
+  return '<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="ReRide" xmlns="http://www.topografix.com/GPX/1/1">' +
+    `<trk><name>${String(ride.name).replace(/</g, "")}</name><trkseg>${pts}</trkseg></trk></gpx>`;
+}
+function rideFileName() {
+  return (ride.name || "reride").replace(/[^\w\- äöüÄÖÜß]+/g, "").trim().replace(/\s+/g, "_") + ".gpx";
+}
+function dlGpx() {
+  if (!ride) { alert("Bitte zuerst eine Fahrt laden."); return; }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([gpxFromRide()], { type: "application/gpx+xml" }));
+  a.download = rideFileName();
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+async function shareRide() {
+  if (!ride) { alert("Bitte zuerst eine Fahrt laden."); return; }
+  const text = `Meine ${mode === "run" ? "Lauf" : "Tour"} „${ride.name}" mit ReRide: ` +
+    `${fmt(ride.distanceKm)} km · ${ride.elevationM} hm – bald im Panorama-Modus nachfahren!`;
+  try {
+    const file = new File([gpxFromRide()], rideFileName(), { type: "application/gpx+xml" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], text, title: "ReRide" });
+      return;
+    }
+    if (navigator.share) { await navigator.share({ text, title: "ReRide" }); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  dlGpx();
+  alert("Teilen nicht verfügbar – die GPX-Datei wurde stattdessen heruntergeladen.");
+}
+async function shareApp() {
+  const text = "ReRide: Eigene Radrunden und Läufe als Panorama-Fahrt nachfahren. " + location.href;
+  try { if (navigator.share) { await navigator.share({ text, title: "ReRide" }); return; } } catch (e) { return; }
+  try { await navigator.clipboard.writeText(text); alert("Link kopiert!"); } catch (e) {}
+}
+
+// ---------- Display: Dimmung & Wake Lock ----------
+let dimVal = 0;
+try { dimVal = clamp(parseInt(localStorage.getItem("r2z_dim")) || 0, 0, 80); } catch (e) {}
+function applyDim() { const d = $("dim"); if (d) d.style.opacity = String(dimVal / 100); }
+let wakeOn = false, wakeLock = null;
+try { wakeOn = localStorage.getItem("r2z_wake") === "1"; } catch (e) {}
+async function applyWake() {
+  if (wakeOn && "wakeLock" in navigator) { try { wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {} }
+  else if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+}
+document.addEventListener("visibilitychange", () => { if (wakeOn && document.visibilityState === "visible") applyWake(); });
+
 // ---------- Tabs & Rendering ----------
 document.querySelectorAll("nav button").forEach((b) => {
   b.addEventListener("click", () => setTab(b.dataset.tab));
@@ -450,7 +753,7 @@ document.querySelectorAll("nav button").forEach((b) => {
 function setTab(id) {
   tab = id;
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === id));
-  ["import", "analyse", "match", "relive"].forEach((t) => { $("tab-" + t).hidden = t !== id; });
+  ["import", "analyse", "match", "relive", "setup"].forEach((t) => { $("tab-" + t).hidden = t !== id; });
   render();
 }
 function needRide(tabName) {
@@ -465,6 +768,7 @@ function render() {
   if (tab === "analyse") renderAnalyse();
   if (tab === "match") renderMatch();
   if (tab === "relive") renderRelive();
+  if (tab === "setup") renderSetup();
 }
 
 const isStandalone =
@@ -474,10 +778,10 @@ const isStandalone =
 function renderImport() {
   const installCard = isStandalone
     ? `<div class="card"><b class="green">✓ Läuft als installierte App</b><br>
-       <span class="hint">Ride2Zwift ist über den Home-Bildschirm im Vollbild-Modus gestartet.</span></div>`
+       <span class="hint">ReRide ist über den Home-Bildschirm im Vollbild-Modus gestartet.</span></div>`
     : `<div class="info-box"><b>📱 Als App auf dem Home-Bildschirm installieren:</b><br>
-       In Safari unten auf „Teilen“ <span class="hint">▲</span> tippen → „Zum Home-Bildschirm hinzufügen“ wählen.
-       Danach startet Ride2Zwift im Vollbild – wie eine native App.</div>`;
+       In Safari unten auf „Teilen" <span class="hint">▲</span> tippen → „Zum Home-Bildschirm hinzufügen" wählen.
+       Danach startet ReRide im Vollbild – wie eine native App.</div>`;
   const cur = ride
     ? `<div class="card"><span class="hint">Aktuell geladen:</span><br><b>${ride.name}</b>
        <span class="hint"><br>${fmt(ride.distanceKm)} km · ${ride.elevationM} hm · ${ride.source}</span>
@@ -488,12 +792,32 @@ function renderImport() {
       <span class="small">Exportiere deine Fahrt aus Garmin Connect (oder Strava) und wähle sie hier aus.
       Alle Daten bleiben auf deinem Gerät.</span></div>
     ${cur}
+    <div class="card">
+      <h2>🔴 Live-Aufnahme</h2>
+      <p class="hint">Nimm deine ${mode === "run" ? "Läufe" : "Fahrten"} direkt hier auf: Das GPS zeichnet deine Strecke
+        live auf – und sofort danach kannst du sie im Relive-Modus nachfahren. Die letzten 10 Aufnahmen bleiben gespeichert.</p>
+      ${rec.on
+        ? `<button class="btn-primary" id="btn-rec" style="background:#f87171;margin-top:10px">⏹ Aufnahme beenden</button>
+           <div class="conn green" id="rec-live">● Aufnahme läuft – GPS-Punkte sammeln…</div>`
+        : `<button class="btn-primary" id="btn-rec" style="margin-top:10px">● Aufnahme starten</button>`}
+      ${recListHtml()}
+    </div>
     <div class="card"><h2>Ohne Datei testen</h2>
       ${DEMOS.map((d, i) => `<button class="demo-btn" data-demo="${i}">${d.name}
         <span class="go">Laden →</span><span class="meta">${fmt(d.distanceKm)} km · ${d.elevationM} Höhenmeter</span></button>`).join("")}
     </div>
+    <div class="card"><h2>Import aus Garmin, Strava & Co.</h2>
+      <p class="hint">So holst du deine Strecken aus den großen Apps – ohne Account, direkt als Datei:</p>
+      <p class="hint" style="margin-top:8px">🧭 <b>Garmin Connect:</b> Aktivität öffnen → Drei-Punkte-Menü → „In GPX exportieren"</p>
+      <p class="hint">🏃 <b>Strava:</b> Aktivität öffnen → Drei-Punkte-Menü → „GPX exportieren"</p>
+      <p class="hint">🗺 <b>Komoot:</b> Tour öffnen → Menü → „GPX herunterladen"</p>
+      <p class="hint" style="margin-top:10px">Die Datei landet in den Downloads bzw. im Dateien-Ordner – hier oben im Upload-Feld einfach auswählen, fertig.</p>
+    </div>
     ${installCard}`;
   $("dz").addEventListener("click", () => $("file-input").click());
+  $("btn-rec").addEventListener("click", () => (rec.on ? stopRec() : startRec()));
+  document.querySelectorAll("[data-rec]").forEach((b) => b.addEventListener("click", () => loadRec(b.dataset.rec)));
+  document.querySelectorAll("[data-recdel]").forEach((b) => b.addEventListener("click", () => delRec(b.dataset.recdel)));
   document.querySelectorAll("[data-demo]").forEach((b) =>
     b.addEventListener("click", () => loadRide(DEMOS[Number(b.dataset.demo)])));
   if (!$("file-input")) {
@@ -610,18 +934,41 @@ function renderRelive() {
         <div class="h"><div class="l">Km</div><div class="v" id="hud-km">${fmt(m.km)}</div></div>
         <div class="h"><div class="l">Höhe</div><div class="v" id="hud-h">${Math.round(m.pt.ele)} m</div></div>
         <div class="h"><div class="l">Steigung</div><div class="v" id="hud-s">${fmt(m.slope)} %</div></div>
-        <div class="h"><div class="l">Wiedergabe</div><div class="v" id="hud-t">${relive.speed}x</div></div>
+        <div class="h"><div class="l">${bike.connected ? "Tempo (live)" : "Wiedergabe"}</div><div class="v" id="hud-t">${bike.connected ? "0.0 km/h" : relive.speed + "x"}</div></div>
+        <div class="h"><div class="l">Trittfreq.</div><div class="v" id="hud-c">–</div></div>
+        <div class="h"><div class="l">Leistung</div><div class="v" id="hud-p">–</div></div>
       </div>
       <div class="controls">
         <button class="btn-play" id="btn-play">${relive.playing ? "⏸" : relive.progress >= 1 ? "↻" : "▶"}</button>
         <input type="range" id="seek" min="0" max="1" step="0.001" value="${relive.progress}">
-        <button class="btn-sec" id="btn-speed">${relive.speed}x</button>
+        <button class="btn-sec" id="btn-speed" ${bike.connected && bike.mode === "speed" ? 'style="opacity:.4" title="Bike steuert das Tempo" disabled' : ""}>${bike.connected && bike.mode === "speed" ? "🚴" : relive.speed + "x"}</button>
         <button class="btn-sec" id="btn-reset">⟲</button>
       </div>
       <p class="hint" style="margin-top:10px">1x ≈ reale Fahrzeit (diese Tour: ~${Math.max(1, Math.round(ride.realSec / 60))} min bei 1x).
-        Bildwechsel alle ~50 m. Der Buffer lädt die nächsten Positionen bereits im Hintergrund.</p>
+        Bildwechsel alle ~50 m. Ist ein Smart Bike verbunden, ersetzt dein echtes Tempo den Zeitregler.</p>
     </div>
     <div class="card"><h2>Position auf der Strecke</h2><div id="rmap">${routeMapSvg(ride.points, relive.progress)}</div></div>
+    <div class="card">
+      <h2>🚴 Smart Bike / Trainer</h2>
+      <p class="hint">Verbinde dein Smart Bike: <b>Dein Tritt steuert dann Tempo und Position der Wiedergabe</b> –
+        du trittst, die Tour bewegt sich in echt. Hörst du auf zu treten, pausiert sie. Gleichzeitig zeigt das HUD
+        live Geschwindigkeit, Trittfrequenz und Leistung an. Und: <b>Der Trainer baut die Steigung deiner Tour
+        als echten Widerstand nach</b> – Anstiege fühlen sich an wie damals.</p>
+      <button class="btn-primary" id="btn-ble" style="margin-top:10px">${bike.connected ? "Trennen" : "Mit Bluetooth verbinden"}</button>
+      <div class="conn" id="ble-status">${bleStatusHtml()}</div>
+      <div class="divider">
+        <div class="row-flex">
+          <button class="btn-sec" id="btn-erg">${bike.erg ? "✓ Widerstands-Sync an" : "Widerstands-Sync aus"}</button>
+        </div>
+        <div class="conn" id="erg-out">${ergStatusHtml()}</div>
+      </div>
+      <label class="lbl">Reifenumfang in m (nur für CSC-Sensoren nötig, Standard 2.1)</label>
+      <input class="field" id="in-circ" type="number" step="0.01" min="1" max="4" value="${circ}">
+      <p class="hint" style="margin-top:10px">⚠ <b>Wichtig:</b> Manche Trainer erlauben nur eine Bluetooth-Verbindung
+        gleichzeitig – läuft <b>Zwift</b> parallel, kann die Verbindung scheitern. Teste es einfach; bei Konflikt
+        Zwift kurz schließen. Auf dem iPhone brauchst du den Gratis-Browser <b>Bluefy</b> (App Store), da Safari
+        Web Bluetooth nicht unterstützt – am PC/Android läuft es direkt in Chrome/Edge.</p>
+    </div>
     <div class="card">
       <h2>Panoramabilder & Zugänge</h2>
       <p class="hint">Google-Key und Mapillary-Token sind optional – Panoramax braucht nichts. Keys bleiben lokal auf deinem Gerät.</p>
@@ -638,8 +985,9 @@ function renderRelive() {
       ${settings.svKey || settings.mlyToken ? '<p class="green" style="margin-top:10px">✓ Aktiv – Street View / Mapillary werden mit genutzt.</p>' : ""}
     </div>
     <div class="info-box"><b>Hinweis:</b> Diese Standalone-Datei läuft komplett in deinem Browser – Datei, Tokens und
-      Fotos werden nur zwischen deinem Gerät und den Bild-Diensten ausgetauscht. Für die echte App geplant:
-      Widerstand am Zwift-Bike synchron zur Steigung.</div>`;
+      Fotos werden nur zwischen deinem Gerät und den Bild-Diensten ausgetauscht. Der Widerstands-Sync nutzt den
+      Fitness-Machine-Service (FTMS); bei Trainern ohne FTMS-Steuerung bleibt Tempo-Sync und HUD trotzdem nutzbar.
+      Beim Pausieren oder Trennen wird der Widerstand automatisch auf 0 % gestellt.</div>`;
 
   $("btn-play").addEventListener("click", () => {
     if (relive.progress >= 1) { relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; }
@@ -653,7 +1001,7 @@ function renderRelive() {
     updateReliveFrame(true);
   });
   $("btn-speed").addEventListener("click", () => {
-    const presets = [1, 2, 4, 10, 25];
+    const presets = [1, 2, 4, 10, 20];
     relive.speed = presets[(presets.indexOf(relive.speed) + 1) % presets.length];
     renderRelive();
   });
@@ -663,6 +1011,14 @@ function renderRelive() {
   const clrSv = $("clr-sv"); if (clrSv) clrSv.addEventListener("click", () => { settings.svKey = ""; saveSettings(); renderRelive(); });
   const clrMly = $("clr-mly"); if (clrMly) clrMly.addEventListener("click", () => { settings.mlyToken = ""; saveSettings(); renderRelive(); });
   $("btn-test").addEventListener("click", runConnTest);
+  $("btn-ble").addEventListener("click", connectBike);
+  $("btn-erg").addEventListener("click", () => {
+    bike.erg = !bike.erg; saveErg();
+    if (!bike.erg && bike.connected && bike.cpc) sendGrade(0);
+    const b = $("btn-erg"); if (b) b.textContent = bike.erg ? "✓ Widerstands-Sync an" : "Widerstands-Sync aus";
+    const eo = $("erg-out"); if (eo) eo.textContent = ergStatusHtml();
+  });
+  $("in-circ").addEventListener("input", (e) => { const v = parseFloat(e.target.value); if (v > 1 && v < 4) { circ = v; saveCirc(); } });
   updateReliveFrame(true);
 }
 function updateReliveFrame(fullMap) {
@@ -672,7 +1028,11 @@ function updateReliveFrame(fullMap) {
   if (hk) hk.textContent = fmt(m.km);
   if (hh) hh.textContent = Math.round(m.pt.ele) + " m";
   if (hs) hs.textContent = fmt(m.slope) + " %";
-  if (ht) ht.textContent = relive.speed + "x";
+  if (bike.connected) {
+    if (ht) ht.textContent = bike.speedKmh.toFixed(1) + " km/h";
+    const hc = $("hud-c"); if (hc) hc.textContent = bike.cadence > 0 ? Math.round(bike.cadence) + " rpm" : "–";
+    const hp = $("hud-p"); if (hp) hp.textContent = bike.power > 0 ? Math.round(bike.power) + " W" : "–";
+  } else if (ht) ht.textContent = relive.speed + "x";
   const rm = $("rmap");
   if (rm && (fullMap || Math.random() < 0.5)) rm.innerHTML = routeMapSvg(ride.points, relive.progress);
   const stopIdx = stopForIdx(m.idx);
@@ -689,8 +1049,22 @@ function updateReliveFrame(fullMap) {
   }
 }
 setInterval(() => {
-  if (!relive.playing || !ride) return;
-  relive.progress = Math.min(1, relive.progress + (relive.speed * 0.05) / ride.realSec);
+  if (!ride) return;
+  if (bike.connected && bike.cpc && bike.erg) {
+    bike.gradeAcc += 0.05;
+    const target = relive.playing ? reliveMetrics().slope : 0;
+    if (bike.gradeAcc >= 1 && Math.abs(target - (bike.lastGrade ?? 0)) > 0.4) {
+      bike.gradeAcc = 0;
+      sendGrade(target);
+    }
+  }
+  if (!relive.playing) return;
+  if (bike.connected && bike.mode === "speed") {
+    const mps = bike.speedKmh / 3.6;
+    if (mps > 0.3) relive.progress = Math.min(1, relive.progress + (mps * 0.05) / (ride.distanceKm * 1000));
+  } else {
+    relive.progress = Math.min(1, relive.progress + (relive.speed * 0.05) / ride.realSec);
+  }
   if (relive.progress >= 1) relive.playing = false;
   updateReliveFrame(true);
   const seek = $("seek"); if (seek) seek.value = relive.progress;
@@ -739,7 +1113,65 @@ async function runConnTest() {
     Panoramax-API: ${res.panoApi}<br>Panoramax-Fotos: ${res.panoStart}`;
 }
 
+// ---------- Setup-Tab ----------
+function renderSetup() {
+  $("tab-setup").innerHTML = `
+    <div class="card">
+      <h2>Modus: Bike oder Run</h2>
+      <div class="row-flex">
+        <button class="btn-sec" id="mode-bike" style="flex:1;padding:11px;${mode !== "run" ? "background:#f97316;color:#020617" : ""}">🚴 ReRide Bike</button>
+        <button class="btn-sec" id="mode-run" style="flex:1;padding:11px;${mode === "run" ? "background:#f97316;color:#020617" : ""}">🏃 ReRide Run</button>
+      </div>
+      <p class="hint" style="margin-top:10px"><b>ReRide Run</b> nutzt dasselbe Prinzip fürs Laufen: eigene Läufe als
+        Panorama-Strecke nachlaufen, GPS-Aufnahme funktioniert genauso, und statt des Smart Trainers verbinden sich
+        Lauf-Sensoren (Running Speed &amp; Cadence – z. B. Footpods oder Laufband) mit dem Tempo-Sync.</p>
+    </div>
+    <div class="card">
+      <h2>Display</h2>
+      <label class="lbl">Dimmung des Bildschirms (schont beim Fahren im Dunkeln)</label>
+      <input type="range" id="dim-slider" min="0" max="80" value="${dimVal}" style="width:100%;accent-color:#f97316;margin-top:8px">
+      <button class="btn-sec" id="btn-wake" style="width:100%;margin-top:12px;padding:11px">${wakeOn ? "✓" : ""} Bildschirm wachhalten ${wakeOn ? "an" : "aus"}</button>
+      <p class="hint" style="margin-top:8px">„Wachhalten" verhindert, dass das Display während der Fahrt ausgeht (soweit der Browser es unterstützt).</p>
+    </div>
+    <div class="card">
+      <h2>Teilen</h2>
+      <button class="btn-primary" id="btn-share-ride">${mode === "run" ? "🏃" : "🚴"} Aktuelle Strecke teilen (inkl. GPX)</button>
+      <button class="btn-sec" id="btn-share-app" style="width:100%;margin-top:8px;padding:11px">📲 ReRide weiterempfehlen</button>
+      <button class="btn-sec" id="btn-dl-gpx" style="width:100%;margin-top:8px;padding:11px">💾 GPX-Datei herunterladen</button>
+      <p class="hint" style="margin-top:8px">Teilt Zusammenfassung + GPX über das Teilen-Menü (Nachrichten, Mail, WhatsApp…) – ideal für Garmin/Strava-Import auf der Gegenseite.</p>
+    </div>
+    <div class="info-box"><b>Über ReRide</b> – v1.5: Eigene Radrunden und Läufe aufzeichnen oder importieren und als
+      Panorama-Fahrt nachfahren – mit Smart-Bike-Sync für Tempo und Widerstand. Wiedergabe-Tempo: 1x, 2x, 4x, 10x, 20x.
+      Alle Daten bleiben auf deinem Gerät.</div>`;
+  $("mode-bike").addEventListener("click", () => setMode("bike"));
+  $("mode-run").addEventListener("click", () => setMode("run"));
+  $("dim-slider").addEventListener("input", (e) => {
+    dimVal = clamp(parseInt(e.target.value) || 0, 0, 80);
+    try { localStorage.setItem("r2z_dim", String(dimVal)); } catch (e2) {}
+    applyDim();
+  });
+  $("btn-wake").addEventListener("click", async () => {
+    wakeOn = !wakeOn;
+    try { localStorage.setItem("r2z_wake", wakeOn ? "1" : "0"); } catch (e) {}
+    await applyWake();
+    renderSetup();
+  });
+  $("btn-share-ride").addEventListener("click", shareRide);
+  $("btn-share-app").addEventListener("click", shareApp);
+  $("btn-dl-gpx").addEventListener("click", dlGpx);
+}
+function setMode(m) {
+  if (mode === m) return;
+  mode = m;
+  applyMode();
+  if (ride) ride.realSec = realSecFor(ride.distanceKm);
+  renderSetup();
+}
+
 // ---------- Start ----------
+applyMode();
+applyDim();
+applyWake();
 render();
 </script>
 </body>
