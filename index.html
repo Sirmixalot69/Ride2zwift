@@ -79,6 +79,20 @@
   .imgwrap img { width: 100%; height: auto; display: block; border-radius: 12px; border: 1px solid #1e293b; background: #0f172a; }
   .loadbox { display: flex; align-items: center; justify-content: center; aspect-ratio: 16/9; border-radius: 12px;
     border: 1px solid #1e293b; background: #0f172a; color: #64748b; font-size: 14px; }
+  #fp { position: relative; aspect-ratio: 16/9; overflow: hidden; border-radius: 12px; }
+  #fp .imgwrap, #fp .imgwrap img { height: 100%; }
+  #fp .imgwrap img { object-fit: cover; }
+  #fp .svg-full { height: 100%; }
+  #fp .loadbox { height: 100%; }
+  .fp-note { position: absolute; bottom: 8px; left: 8px; margin: 0; background: rgba(0,0,0,.55);
+    padding: 3px 8px; border-radius: 8px; }
+  @media (orientation: landscape) and (max-height: 520px) {
+    body { padding: 8px 10px; }
+    header { margin-bottom: 8px; } nav { margin-bottom: 8px; }
+    .wrap { max-width: none; }
+    #fp { aspect-ratio: auto; height: calc(100vh - 128px); max-height: 82vh; }
+  }
+  :fullscreen .wrap, :-webkit-full-screen .wrap { max-width: none; }
   .amber { color: #fbbf24; font-size: 12px; margin-top: 8px; }
   .green { color: #4ade80; font-size: 12px; }
   .slope-badge { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid; float: right; }
@@ -99,7 +113,7 @@
   <header>
     <div class="logo" id="logo">🚴</div>
     <div>
-      <h1>ReRide <span class="ver">v1.5</span> <span class="ver" id="mode-badge">🚴 Bike</span></h1>
+      <h1>ReRide <span class="ver">v1.6</span> <span class="ver" id="mode-badge">🚴 Bike</span></h1>
       <p class="sub" id="sub">Reale Touren und Läufe visuell nachfahren – installierbare Web-App</p>
     </div>
   </header>
@@ -334,7 +348,7 @@ function statCard(label, value, unit) {
 // ---------- State & Settings ----------
 let ride = null;
 let tab = "import";
-let relive = { playing: false, progress: 0, speed: 4, timer: null, lastStop: -1, lastFrame: null, seq: 0 };
+let relive = { playing: false, progress: 0, speed: 4, timer: null, lastStop: -1, lastFrame: null, lastGood: null, seq: 0 };
 let imgCache = {};
 let settings = { svKey: "", mlyToken: "" };
 try {
@@ -628,10 +642,19 @@ function setFp(stopIdx) {
   const fp = $("fp");
   if (!fp) return;
   const cached = imgCache[stopIdx];
-  if (cached && cached !== "pending") { fp.innerHTML = imgHtml(cached.url, cached.credit); return; }
+  if (cached && cached !== "pending") {
+    relive.lastGood = cached;
+    fp.innerHTML = imgHtml(cached.url, cached.credit);
+    return;
+  }
+  if (relive.lastGood) {
+    fp.innerHTML = imgHtml(relive.lastGood.url, relive.lastGood.credit);
+    return;
+  }
   const m = reliveMetrics();
   if (cached === null) {
-    fp.innerHTML = simSvg(m.eleNorm, m.slope, m.km) + '<p class="amber">Keine Panoramabilder an dieser Position – Simulation aktiv.</p>';
+    fp.innerHTML = simSvg(m.eleNorm, m.slope, m.km) +
+      '<p class="amber fp-note">Simulation – keine Panoramen an dieser Position</p>';
     return;
   }
   fp.innerHTML = loadingBox("Lade Panoramabild…");
@@ -838,7 +861,7 @@ function renderImport() {
 function loadRide(r) {
   if (!r) { alert("Datei nicht erkannt. Unterstützt: GPX und TCX mit GPS-Punkten. FIT-Dateien bitte in Garmin Connect als GPX exportieren, ZIP entpacken."); return; }
   ride = r;
-  relive = { playing: false, progress: 0, speed: relive.speed, timer: null, lastStop: -1, lastFrame: null, seq: 0 };
+  relive = { playing: false, progress: 0, speed: relive.speed, timer: null, lastStop: -1, lastFrame: null, lastGood: null, seq: 0 };
   imgCache = {};
   setTab("analyse");
 }
@@ -916,6 +939,19 @@ function reliveMetrics() {
   const eleNorm = (pt.ele - minE) / (maxE - minE || 1);
   return { idx, pt, slope, eleNorm, km: relive.progress * ride.distanceKm };
 }
+function toggleFs() {
+  const doc = document, el = doc.documentElement;
+  const isFs = doc.fullscreenElement || doc.webkitFullscreenElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!isFs && req) {
+    try { const p = req.call(el); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+  } else if (isFs) {
+    const ex = doc.exitFullscreen || doc.webkitExitFullscreen;
+    if (ex) { try { const p = ex.call(doc); if (p && p.catch) p.catch(() => {}); } catch (e) {} }
+  } else {
+    alert("Vollbild wird von diesem Browser nicht unterstützt.\n\nFür Apple TV: Kontrollzentrum öffnen → „Bildschirmübertragung" → Apple TV, dann Handy quer drehen.");
+  }
+}
 function renderRelive() {
   const err = needRide("die Relive-Ansicht");
   if (err) { $("tab-relive").innerHTML = err; return; }
@@ -925,7 +961,9 @@ function renderRelive() {
   $("tab-relive").innerHTML = `
     <p class="hint" style="margin-bottom:12px">Fahre deine Tour visuell nach – mit echten Panoramabildern, wo verfügbar:
       Street View → Mapillary → Panoramax → Simulation. Die nächsten ~600 m werden laufend vorab geladen (Buffer),
-      damit die Fahrt flüssig wirkt. ${status}</p>
+      damit die Fahrt flüssig wirkt. Das letzte Bild bleibt stehen, bis das nächste bereit ist – kein Flackern.
+      📺 <b>Apple TV:</b> iPhone-Kontrollzentrum → „Bildschirmübertragung" → Apple TV, dann Handy quer drehen –
+      die Ansicht füllt dann den ganzen Fernseher aus. ${status}</p>
     <div class="card">
       <h2>Straßenansicht <span class="slope-badge" style="color:${tone[0]};background:${tone[1]};border-color:${tone[0]}55">
         ${(m.slope >= 0 ? "+" : "") + fmt(m.slope)} % ${m.slope > 3 ? "Anstieg" : m.slope < -3 ? "Abfahrt" : "rollend"}</span></h2>
@@ -943,6 +981,7 @@ function renderRelive() {
         <input type="range" id="seek" min="0" max="1" step="0.001" value="${relive.progress}">
         <button class="btn-sec" id="btn-speed" ${bike.connected && bike.mode === "speed" ? 'style="opacity:.4" title="Bike steuert das Tempo" disabled' : ""}>${bike.connected && bike.mode === "speed" ? "🚴" : relive.speed + "x"}</button>
         <button class="btn-sec" id="btn-reset">⟲</button>
+        <button class="btn-sec" id="btn-fs" title="Vollbild / Apple TV">⛶</button>
       </div>
       <p class="hint" style="margin-top:10px">1x ≈ reale Fahrzeit (diese Tour: ~${Math.max(1, Math.round(ride.realSec / 60))} min bei 1x).
         Bildwechsel alle ~50 m. Ist ein Smart Bike verbunden, ersetzt dein echtes Tempo den Zeitregler.</p>
@@ -990,7 +1029,7 @@ function renderRelive() {
       Beim Pausieren oder Trennen wird der Widerstand automatisch auf 0 % gestellt.</div>`;
 
   $("btn-play").addEventListener("click", () => {
-    if (relive.progress >= 1) { relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; }
+    if (relive.progress >= 1) { relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; relive.lastGood = null; }
     relive.playing = !relive.playing;
     renderRelive();
   });
@@ -1005,13 +1044,14 @@ function renderRelive() {
     relive.speed = presets[(presets.indexOf(relive.speed) + 1) % presets.length];
     renderRelive();
   });
-  $("btn-reset").addEventListener("click", () => { relive.playing = false; relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; renderRelive(); });
+  $("btn-reset").addEventListener("click", () => { relive.playing = false; relive.progress = 0; relive.lastStop = -1; relive.lastFrame = null; relive.lastGood = null; renderRelive(); });
   $("in-sv").addEventListener("input", (e) => { settings.svKey = e.target.value.trim(); saveSettings(); });
   $("in-mly").addEventListener("input", (e) => { settings.mlyToken = e.target.value.trim(); saveSettings(); });
   const clrSv = $("clr-sv"); if (clrSv) clrSv.addEventListener("click", () => { settings.svKey = ""; saveSettings(); renderRelive(); });
   const clrMly = $("clr-mly"); if (clrMly) clrMly.addEventListener("click", () => { settings.mlyToken = ""; saveSettings(); renderRelive(); });
   $("btn-test").addEventListener("click", runConnTest);
   $("btn-ble").addEventListener("click", connectBike);
+  $("btn-fs").addEventListener("click", toggleFs);
   $("btn-erg").addEventListener("click", () => {
     bike.erg = !bike.erg; saveErg();
     if (!bike.erg && bike.connected && bike.cpc) sendGrade(0);
@@ -1042,7 +1082,7 @@ function updateReliveFrame(fullMap) {
     preloadFrom(stopIdx);
   }
   const cached = imgCache[stopIdx];
-  const frameKey = cached === undefined || cached === "pending" ? "pending" : cached ? cached.url : "sim";
+  const frameKey = cached && cached !== "pending" ? cached.url : relive.lastGood ? "keep" : cached === null ? "sim" : "pending";
   if (frameKey !== relive.lastFrame || frameKey === "sim") {
     relive.lastFrame = frameKey;
     setFp(stopIdx);
@@ -1140,7 +1180,7 @@ function renderSetup() {
       <button class="btn-sec" id="btn-dl-gpx" style="width:100%;margin-top:8px;padding:11px">💾 GPX-Datei herunterladen</button>
       <p class="hint" style="margin-top:8px">Teilt Zusammenfassung + GPX über das Teilen-Menü (Nachrichten, Mail, WhatsApp…) – ideal für Garmin/Strava-Import auf der Gegenseite.</p>
     </div>
-    <div class="info-box"><b>Über ReRide</b> – v1.5: Eigene Radrunden und Läufe aufzeichnen oder importieren und als
+    <div class="info-box"><b>Über ReRide</b> – v1.6: Eigene Radrunden und Läufe aufzeichnen oder importieren und als
       Panorama-Fahrt nachfahren – mit Smart-Bike-Sync für Tempo und Widerstand. Wiedergabe-Tempo: 1x, 2x, 4x, 10x, 20x.
       Alle Daten bleiben auf deinem Gerät.</div>`;
   $("mode-bike").addEventListener("click", () => setMode("bike"));
